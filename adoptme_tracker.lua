@@ -79,10 +79,35 @@ local ok, err = pcall(function()
         return data
     end
 
-    local VALID_AGES = {
-        Newborn=true, Junior=true, ["Pre-Teen"]=true,
-        Teen=true, ["Post-Teen"]=true, ["Full Grown"]=true,
+    local AGE_MAP = {
+        [1] = "Newborn",
+        [2] = "Junior",
+        [3] = "Pre-Teen",
+        [4] = "Teen",
+        [5] = "Post-Teen",
+        [6] = "Full Grown",
     }
+
+    local function clean_pet_name(raw)
+        if not raw then return "Unknown" end
+        local cleaned = raw
+        local prefixes = {
+            "basic_egg_2022_", "basic_egg_2021_", "basic_egg_2020_",
+            "basic_egg_", "uncommon_", "rare_", "ultra_rare_",
+            "legendary_", "common_", "event_",
+        }
+        for _, prefix in ipairs(prefixes) do
+            if cleaned:sub(1, #prefix) == prefix then
+                cleaned = cleaned:sub(#prefix + 1)
+                break
+            end
+        end
+        cleaned = cleaned:gsub("_", " ")
+        cleaned = cleaned:gsub("(%a)([%w_']*)", function(first, rest)
+            return first:upper() .. rest:lower()
+        end)
+        return cleaned
+    end
 
     local function scan_inventory()
         open_inventory_ui()
@@ -101,11 +126,13 @@ local ok, err = pcall(function()
 
         local items = {}
 
-        -- Pets
+        -- Pets (and eggs that live in inventory.pets — Adopt Me ships eggs here too)
         local pets = inventory.pets or {}
         local pet_count = 0
+        local egg_count_in_pets = 0
+        local first = true
         for _, pet in pairs(pets) do
-            if pet_count == 0 then
+            if first then
                 print("[AT] DEBUG first pet fields:")
                 for k, v in pairs(pet) do
                     print("[AT]   " .. tostring(k) .. " = " .. tostring(v))
@@ -115,34 +142,56 @@ local ok, err = pcall(function()
                         end
                     end
                 end
+                first = false
             end
-            local name = pet.petType
-                      or pet.name
-                      or (pet.config and pet.config.name)
-                      or (pet.catalogItem and pet.catalogItem.name)
-                      or "Unknown"
+
+            local raw_name = pet.name or pet.petType or pet.displayName
+                          or pet.kind or pet.id or "unknown"
+            local item_name = clean_pet_name(raw_name)
             local props = pet.properties or {}
+            local category = pet.category or ""
+            local kind = pet.kind or pet.id or ""
+
+            local item_type
+            if category == "eggs" or kind:find("egg") then
+                item_type = "egg"
+            else
+                item_type = "pet"
+            end
+
             local item = {
-                item_type = "pet",
-                item_name = tostring(name),
+                item_type = item_type,
+                item_name = tostring(item_name),
                 quantity  = 1,
-                fly       = (props.flyable or pet.flyable) and true or false,
-                ride      = (props.rideable or pet.rideable) and true or false,
-                neon      = pet.neon and true or false,
-                mega_neon = pet.megaNeon and true or false,
             }
-            local age = pet.age or props.age
-            if age and VALID_AGES[age] then item.age = age end
+
+            if item_type == "pet" then
+                item.fly       = (props.flyable or props.fly) and true or false
+                item.ride      = (props.rideable or props.ride) and true or false
+                item.neon      = (pet.neon or props.neon) and true or false
+                item.mega_neon = (pet.megaNeon or props.megaNeon) and true or false
+                local age_num = tonumber(props.age)
+                if age_num and AGE_MAP[age_num] then
+                    item.age = AGE_MAP[age_num]
+                end
+                pet_count = pet_count + 1
+            else
+                egg_count_in_pets = egg_count_in_pets + 1
+            end
+
             table.insert(items, item)
-            pet_count = pet_count + 1
             if DEBUG_ITEMS then
-                print(string.format("[AT]   pet: %s (fly=%s ride=%s neon=%s mneon=%s)",
-                    item.item_name,
-                    tostring(item.fly), tostring(item.ride),
-                    tostring(item.neon), tostring(item.mega_neon)))
+                if item_type == "pet" then
+                    print(string.format("[AT]   pet: %s (fly=%s ride=%s neon=%s mneon=%s age=%s)",
+                        item.item_name, tostring(item.fly), tostring(item.ride),
+                        tostring(item.neon), tostring(item.mega_neon), tostring(item.age)))
+                else
+                    print(string.format("[AT]   egg(in pets): %s", item.item_name))
+                end
             end
         end
-        print(string.format("[AT] scan: pets found = %d", pet_count))
+        print(string.format("[AT] scan: pets found = %d, eggs (in pets table) = %d",
+            pet_count, egg_count_in_pets))
 
         -- Eggs: prefer inventory.eggs, fall back to egg-shaped entries in inventory.items
         local egg_count = 0
