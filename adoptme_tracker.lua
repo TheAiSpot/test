@@ -7,8 +7,8 @@ local ok, err = pcall(function()
     local TOKEN              = (getgenv and getgenv().AT_TOKEN) or AT_TOKEN or "YOUR_TOKEN_HERE"
     local USERNAME           = game.Players.LocalPlayer.Name
     local SCAN_INTERVAL      = (getgenv and getgenv().AT_INTERVAL) or AT_INTERVAL or 300
-    local HEARTBEAT_INTERVAL = 30
-    local MIN_SYNC_GAP       = 10  -- minimum seconds between event-triggered syncs
+    local HEARTBEAT_INTERVAL = 60
+    local MIN_SYNC_GAP       = 60  -- minimum seconds between event-triggered syncs
     local BOOT_DELAY         = 6
     local DEBUG_ITEMS        = true
 
@@ -352,6 +352,111 @@ local ok, err = pcall(function()
             "[AT] scan: vehicles=%d toys=%d strollers=%d accessories=%d gifts=%d food=%d",
             v_count, t_count, s_count, a_count, g_count, f_count))
 
+        -- Potions: filter inventory tables for entries whose name contains
+        -- "potion". Adopt Me sometimes ships them in `food`/`foods`, sometimes
+        -- in `items`, sometimes in their own `potions` table.
+        local POTION_TABLES = { "potions", "foods", "food", "items" }
+        local potion_count = 0
+        local seen_potion_keys = {}
+        for _, key in ipairs(POTION_TABLES) do
+            local tbl = inventory[key]
+            if type(tbl) == "table" then
+                for _, entry in pairs(tbl) do
+                    local raw = entry.name or entry.kind or entry.id or ""
+                    local lower = string.lower(tostring(raw))
+                    if lower:find("potion") and not seen_potion_keys[lower] then
+                        seen_potion_keys[lower] = true
+                        local item = {
+                            item_type = "potion",
+                            item_name = clean_pet_name(raw),
+                            quantity  = tonumber(entry.count or entry.quantity or entry.stack) or 1,
+                        }
+                        local rarity = get_rarity(raw)
+                        if rarity then item.rarity = rarity end
+                        table.insert(items, item)
+                        potion_count = potion_count + 1
+                        if DEBUG_ITEMS then
+                            print(string.format("[AT]   potion: %s (qty=%d rarity=%s)",
+                                item.item_name, item.quantity, tostring(item.rarity or "-")))
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Event currency: scan known currency names (event-driven, varies).
+        local CURRENCY_NAMES = {
+            candy=true, candies=true, stars=true, shells=true, tokens=true,
+            tickets=true, gingerbread=true, fragments=true, hearts=true,
+            snowflakes=true, pumpkins=true, treats=true, gems=true, coins=true,
+            eggs_currency=true,
+        }
+        local currency_count = 0
+        local function maybe_currency(raw)
+            if not raw or raw == "" then return nil end
+            local key = strip_prefix(tostring(raw)):lower():gsub("_", " ")
+            for word in key:gmatch("%S+") do
+                if CURRENCY_NAMES[word] then return true end
+            end
+            return CURRENCY_NAMES[key] == true
+        end
+        for _, key in ipairs({ "currency", "currencies", "events", "event_items", "items" }) do
+            local tbl = inventory[key]
+            if type(tbl) == "table" then
+                for _, entry in pairs(tbl) do
+                    local raw = entry.name or entry.kind or entry.id or ""
+                    if maybe_currency(raw) then
+                        local item = {
+                            item_type = "event_currency",
+                            item_name = clean_pet_name(raw),
+                            quantity  = tonumber(entry.count or entry.quantity or entry.stack) or 1,
+                        }
+                        table.insert(items, item)
+                        currency_count = currency_count + 1
+                        if DEBUG_ITEMS then
+                            print(string.format("[AT]   event_currency: %s (qty=%d)",
+                                item.item_name, item.quantity))
+                        end
+                    end
+                end
+            end
+        end
+
+        -- Bucks: try common locations in ClientData first, then leaderstats.
+        local bucks_value = nil
+        local bucks_paths = {
+            function() return data.bucks end,
+            function() return data.currency and data.currency.bucks end,
+            function() return data.player and data.player.bucks end,
+            function() return data.economy and data.economy.bucks end,
+            function()
+                local stats = game.Players.LocalPlayer:FindFirstChild("leaderstats")
+                if stats then
+                    local b = stats:FindFirstChild("Bucks") or stats:FindFirstChild("bucks")
+                    if b and b.Value then return b.Value end
+                end
+                return nil
+            end,
+        }
+        for _, fn in ipairs(bucks_paths) do
+            local ok_b, v = pcall(fn)
+            if ok_b and type(v) == "number" then
+                bucks_value = v
+                break
+            end
+        end
+        if bucks_value then
+            table.insert(items, {
+                item_type = "bucks",
+                item_name = "Bucks",
+                quantity  = math.floor(bucks_value),
+            })
+        end
+
+        print(string.format("[AT] scan: potions=%d event_currency=%d bucks=%s",
+            potion_count, currency_count,
+            bucks_value and tostring(math.floor(bucks_value)) or "?"))
+
         print(string.format("[AT] scan: total items = %d", #items))
         return items
     end
@@ -362,7 +467,7 @@ local ok, err = pcall(function()
             t.year, t.month, t.day, t.hour, t.min, t.sec)
     end
 
-    local function post_payload(payload, label)
+    local function post_payload(payload, label, path)
         if not request_fn then
             print("[AT] " .. label .. ": no HTTP function available")
             return false
@@ -373,7 +478,7 @@ local ok, err = pcall(function()
             return false
         end
         local req_ok, res = pcall(request_fn, {
-            Url     = WEBHOOK_URL .. "/api/inventory",
+            Url     = WEBHOOK_URL .. (path or "/api/inventory"),
             Method  = "POST",
             Headers = {
                 ["Content-Type"] = "application/json",
@@ -444,7 +549,7 @@ local ok, err = pcall(function()
             items           = {},
             heartbeat       = true,
         }
-        post_payload(payload, "heartbeat")
+        post_payload(payload, "heartbeat", "/api/heartbeat")
     end
 
     -- First sync + first heartbeat immediately
