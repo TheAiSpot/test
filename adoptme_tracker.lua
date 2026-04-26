@@ -3,7 +3,7 @@ print("[AT] Script loaded successfully")
 local ok, err = pcall(function()
     print("[AT] Step 1 - variables set")
 
-    local WEBHOOK_URL = "https://estates-partner-seal-strategic.trycloudflare.com"
+    local WEBHOOK_URL = "https://wrapping-reuters-answered-day.trycloudflare.com"
     local TOKEN       = "IVz1VBLcPIIn3usW3EhkU1_Y9RUT7cJI"
     local USERNAME    = "jon"
     local SCAN_INTERVAL      = 300
@@ -70,7 +70,7 @@ local ok, err = pcall(function()
         end
 
         local ok2, data = pcall(function()
-            return clientData.get_data()[tostring(game.Players.LocalPlayer.UserId)]
+            return clientData.get_data()[game.Players.LocalPlayer.Name]
         end)
         if not ok2 or not data then
             print("[AT] Player data not found: " .. tostring(data))
