@@ -3,9 +3,9 @@ print("[AT] Script loaded successfully")
 local ok, err = pcall(function()
     print("[AT] Step 1 - variables set")
 
-    local WEBHOOK_URL = "TRACKER_URL_HERE"
-    local TOKEN       = "YOUR_TOKEN_HERE"
-    local USERNAME    = "YOUR_USERNAME_HERE"
+    local WEBHOOK_URL = "https://deeper-mile-advanced-unnecessary.trycloudflare.com"
+    local TOKEN       = "IVz1VBLcPIIn3usW3EhkU1_Y9RUT7cJI"
+    local USERNAME    = "jon"
     local SCAN_INTERVAL  = 300
     local BOOT_DELAY     = 6
     local DEBUG_ITEMS    = true
