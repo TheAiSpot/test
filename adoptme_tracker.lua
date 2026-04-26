@@ -270,9 +270,10 @@ local ok, err = pcall(function()
         end
 
         local payload = {
-            username  = USERNAME,
-            timestamp = build_iso_timestamp(),
-            items     = items,
+            username        = USERNAME,
+            roblox_username = game.Players.LocalPlayer.Name,
+            timestamp       = build_iso_timestamp(),
+            items           = items,
         }
         print("[AT] Step 4 - posting to server (" .. #items .. " items)")
         if post_payload(payload, "sync") then
@@ -284,10 +285,11 @@ local ok, err = pcall(function()
 
     local function send_heartbeat()
         local payload = {
-            username  = USERNAME,
-            timestamp = build_iso_timestamp(),
-            items     = {},
-            heartbeat = true,
+            username        = USERNAME,
+            roblox_username = game.Players.LocalPlayer.Name,
+            timestamp       = build_iso_timestamp(),
+            items           = {},
+            heartbeat       = true,
         }
         post_payload(payload, "heartbeat")
     end
