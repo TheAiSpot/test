@@ -88,25 +88,75 @@ local ok, err = pcall(function()
         [6] = "Full Grown",
     }
 
-    local function clean_pet_name(raw)
-        if not raw then return "Unknown" end
-        local cleaned = raw
-        local prefixes = {
-            "basic_egg_2022_", "basic_egg_2021_", "basic_egg_2020_",
-            "basic_egg_", "uncommon_", "rare_", "ultra_rare_",
-            "legendary_", "common_", "event_",
-        }
-        for _, prefix in ipairs(prefixes) do
+    local PREFIXES = {
+        "basic_egg_2022_", "basic_egg_2021_", "basic_egg_2020_",
+        "basic_egg_", "uncommon_", "rare_", "ultra_rare_",
+        "legendary_", "common_", "event_",
+    }
+
+    local function strip_prefix(raw)
+        local cleaned = raw or ""
+        for _, prefix in ipairs(PREFIXES) do
             if cleaned:sub(1, #prefix) == prefix then
-                cleaned = cleaned:sub(#prefix + 1)
-                break
+                return cleaned:sub(#prefix + 1)
             end
         end
+        return cleaned
+    end
+
+    local function clean_pet_name(raw)
+        if not raw then return "Unknown" end
+        local cleaned = strip_prefix(raw)
         cleaned = cleaned:gsub("_", " ")
         cleaned = cleaned:gsub("(%a)([%w_']*)", function(first, rest)
             return first:upper() .. rest:lower()
         end)
         return cleaned
+    end
+
+    local RARITY_MAP = {
+        -- Common
+        practice_dog="Common", dog="Common", cat="Common",
+        chicken="Common", ground_sloth="Common", buffalo="Common",
+        otter="Common", rabbit="Common", rat="Common",
+        starter_egg="Common",
+        -- Uncommon
+        chocolate_labrador="Uncommon", fennec_fox="Uncommon",
+        panda="Uncommon", reindeer="Uncommon", snow_puma="Uncommon",
+        flamingo="Uncommon", bunny="Uncommon", pig="Uncommon",
+        ox="Uncommon", red_panda="Uncommon",
+        -- Rare
+        bee="Rare", hedgehog="Rare", koala="Rare", monkey="Rare",
+        polar_bear="Rare", sloth="Rare", turkey="Rare", cow="Rare",
+        dodo="Rare", elephant="Rare", giraffe="Rare",
+        kangaroo="Rare", llama="Rare", penguin="Rare",
+        platypus="Rare", rhino="Rare", wolf="Rare",
+        swordfish="Rare", horse="Rare", emu="Rare",
+        -- Ultra-Rare
+        crow="Ultra-Rare", dalmatian="Ultra-Rare",
+        hyena="Ultra-Rare", meerkat="Ultra-Rare",
+        porcupine="Ultra-Rare", sabertooth="Ultra-Rare",
+        shiba_inu="Ultra-Rare", unicorn="Ultra-Rare",
+        arctic_fox="Ultra-Rare", bat="Ultra-Rare",
+        clownfish="Ultra-Rare", dragonfly="Ultra-Rare",
+        zombie_buffalo="Ultra-Rare", albino_monkey="Ultra-Rare",
+        -- Legendary
+        dragon="Legendary", frost_dragon="Legendary",
+        griffin="Legendary", parrot="Legendary",
+        queen_bee="Legendary", shadow_dragon="Legendary",
+        turtle="Legendary", kitsune="Legendary", owl="Legendary",
+        phoenix="Legendary", robo_dog="Legendary",
+        t_rex="Legendary", wyvern="Legendary",
+        bat_dragon="Legendary", evil_unicorn="Legendary",
+        frost_fury="Legendary", golden_unicorn="Legendary",
+        diamond_unicorn="Legendary", skele_rex="Legendary",
+        cerberus="Legendary", octopus="Legendary",
+    }
+
+    local function get_rarity(raw)
+        if not raw then return nil end
+        local key = strip_prefix(raw):lower()
+        return RARITY_MAP[key]
     end
 
     local function scan_inventory()
@@ -130,82 +180,96 @@ local ok, err = pcall(function()
         local pets = inventory.pets or {}
         local pet_count = 0
         local egg_count_in_pets = 0
+        local skipped_practice = 0
         local first = true
         for _, pet in pairs(pets) do
-            if first then
-                print("[AT] DEBUG first pet fields:")
-                for k, v in pairs(pet) do
-                    print("[AT]   " .. tostring(k) .. " = " .. tostring(v))
-                    if type(v) == "table" then
-                        for k2, v2 in pairs(v) do
-                            print("[AT]     " .. tostring(k2) .. " = " .. tostring(v2))
+            local kind_early = pet.kind or pet.id or ""
+            if kind_early == "practice_dog" or kind_early == "practice_pet" then
+                -- Hidden starter pet that doesn't appear in the actual backpack.
+                skipped_practice = skipped_practice + 1
+            else
+                if first then
+                    print("[AT] DEBUG first pet fields:")
+                    for k, v in pairs(pet) do
+                        print("[AT]   " .. tostring(k) .. " = " .. tostring(v))
+                        if type(v) == "table" then
+                            for k2, v2 in pairs(v) do
+                                print("[AT]     " .. tostring(k2) .. " = " .. tostring(v2))
+                            end
                         end
                     end
+                    first = false
                 end
-                first = false
-            end
 
-            local raw_name = pet.name or pet.petType or pet.displayName
-                          or pet.kind or pet.id or "unknown"
-            local item_name = clean_pet_name(raw_name)
-            local props = pet.properties or {}
-            local category = pet.category or ""
-            local kind = pet.kind or pet.id or ""
+                local raw_name = pet.name or pet.petType or pet.displayName
+                              or pet.kind or pet.id or "unknown"
+                local item_name = clean_pet_name(raw_name)
+                local props = pet.properties or {}
+                local category = pet.category or ""
+                local kind = pet.kind or pet.id or ""
 
-            local item_type
-            if category == "eggs" or kind:find("egg") then
-                item_type = "egg"
-            else
-                item_type = "pet"
-            end
-
-            local item = {
-                item_type = item_type,
-                item_name = tostring(item_name),
-                quantity  = 1,
-            }
-
-            if item_type == "pet" then
-                item.fly       = (props.flyable or props.fly) and true or false
-                item.ride      = (props.rideable or props.ride) and true or false
-                item.neon      = (pet.neon or props.neon) and true or false
-                item.mega_neon = (pet.megaNeon or props.megaNeon) and true or false
-                local age_num = tonumber(props.age)
-                if age_num and AGE_MAP[age_num] then
-                    item.age = AGE_MAP[age_num]
-                end
-                pet_count = pet_count + 1
-            else
-                egg_count_in_pets = egg_count_in_pets + 1
-            end
-
-            table.insert(items, item)
-            if DEBUG_ITEMS then
-                if item_type == "pet" then
-                    print(string.format("[AT]   pet: %s (fly=%s ride=%s neon=%s mneon=%s age=%s)",
-                        item.item_name, tostring(item.fly), tostring(item.ride),
-                        tostring(item.neon), tostring(item.mega_neon), tostring(item.age)))
+                local item_type
+                if category == "eggs" or kind:find("egg") then
+                    item_type = "egg"
                 else
-                    print(string.format("[AT]   egg(in pets): %s", item.item_name))
+                    item_type = "pet"
+                end
+
+                local item = {
+                    item_type = item_type,
+                    item_name = tostring(item_name),
+                    quantity  = 1,
+                }
+                local rarity = get_rarity(raw_name)
+                if rarity then item.rarity = rarity end
+
+                if item_type == "pet" then
+                    item.fly       = (props.flyable or props.fly) and true or false
+                    item.ride      = (props.rideable or props.ride) and true or false
+                    item.neon      = (pet.neon or props.neon) and true or false
+                    item.mega_neon = (pet.megaNeon or props.megaNeon) and true or false
+                    local age_num = tonumber(props.age)
+                    if age_num and AGE_MAP[age_num] then
+                        item.age = AGE_MAP[age_num]
+                    end
+                    pet_count = pet_count + 1
+                else
+                    egg_count_in_pets = egg_count_in_pets + 1
+                end
+
+                table.insert(items, item)
+                if DEBUG_ITEMS then
+                    if item_type == "pet" then
+                        print(string.format("[AT]   pet: %s (rarity=%s fly=%s ride=%s neon=%s mneon=%s age=%s)",
+                            item.item_name, tostring(item.rarity or "-"),
+                            tostring(item.fly), tostring(item.ride),
+                            tostring(item.neon), tostring(item.mega_neon), tostring(item.age)))
+                    else
+                        print(string.format("[AT]   egg(in pets): %s (rarity=%s)",
+                            item.item_name, tostring(item.rarity or "-")))
+                    end
                 end
             end
         end
-        print(string.format("[AT] scan: pets found = %d, eggs (in pets table) = %d",
-            pet_count, egg_count_in_pets))
+        print(string.format("[AT] scan: pets=%d eggs(in pets)=%d skipped(practice)=%d",
+            pet_count, egg_count_in_pets, skipped_practice))
 
         -- Eggs: prefer inventory.eggs, fall back to egg-shaped entries in inventory.items
         local egg_count = 0
         local function add_egg(entry)
-            local name = entry.name or entry.eggType or entry.itemType or "Unknown Egg"
+            local raw = entry.name or entry.eggType or entry.itemType or "unknown_egg"
             local item = {
                 item_type = "egg",
-                item_name = tostring(name),
+                item_name = clean_pet_name(raw),
                 quantity  = tonumber(entry.count or entry.quantity or entry.stack) or 1,
             }
+            local rarity = get_rarity(raw)
+            if rarity then item.rarity = rarity end
             table.insert(items, item)
             egg_count = egg_count + 1
             if DEBUG_ITEMS then
-                print(string.format("[AT]   egg: %s (qty=%d)", item.item_name, item.quantity))
+                print(string.format("[AT]   egg: %s (qty=%d rarity=%s)",
+                    item.item_name, item.quantity, tostring(item.rarity or "-")))
             end
         end
 
@@ -218,7 +282,42 @@ local ok, err = pcall(function()
                 if n:find("egg") then add_egg(it) end
             end
         end
-        print(string.format("[AT] scan: eggs found = %d", egg_count))
+        print(string.format("[AT] scan: eggs (legacy paths) = %d", egg_count))
+
+        -- Other inventory categories: vehicles, toys, strollers, accessories, gifts, food.
+        -- Adopt Me ships these in their own tables under data.inventory.
+        local function add_category(category_table, category_label)
+            if not category_table then return 0 end
+            local count = 0
+            for _, entry in pairs(category_table) do
+                local raw_name = entry.name or entry.kind or entry.id or "unknown"
+                local item = {
+                    item_type = category_label,
+                    item_name = clean_pet_name(raw_name),
+                    quantity  = tonumber(entry.count or entry.quantity or entry.stack) or 1,
+                }
+                local rarity = get_rarity(raw_name)
+                if rarity then item.rarity = rarity end
+                table.insert(items, item)
+                count = count + 1
+                if DEBUG_ITEMS then
+                    print(string.format("[AT]   %s: %s (qty=%d rarity=%s)",
+                        category_label, item.item_name, item.quantity,
+                        tostring(item.rarity or "-")))
+                end
+            end
+            return count
+        end
+
+        local v_count = add_category(inventory.vehicles,    "vehicle")
+        local t_count = add_category(inventory.toys,        "toy")
+        local s_count = add_category(inventory.strollers,   "stroller")
+        local a_count = add_category(inventory.accessories, "accessory")
+        local g_count = add_category(inventory.gifts,       "other")
+        local f_count = add_category(inventory.food,        "food")
+        print(string.format(
+            "[AT] scan: vehicles=%d toys=%d strollers=%d accessories=%d gifts=%d food=%d",
+            v_count, t_count, s_count, a_count, g_count, f_count))
 
         print(string.format("[AT] scan: total items = %d", #items))
         return items
