@@ -3,9 +3,9 @@ print("[AT] Script loaded successfully")
 local ok, err = pcall(function()
     print("[AT] Step 1 - variables set")
 
-    local WEBHOOK_URL = "https://wrapping-reuters-answered-day.trycloudflare.com"
-    local TOKEN       = "IVz1VBLcPIIn3usW3EhkU1_Y9RUT7cJI"
-    local USERNAME    = "jon"
+    local WEBHOOK_URL        = (getgenv and getgenv().AT_URL)   or AT_URL   or "TRACKER_URL_HERE"
+    local TOKEN              = (getgenv and getgenv().AT_TOKEN) or AT_TOKEN or "YOUR_TOKEN_HERE"
+    local USERNAME           = game.Players.LocalPlayer.Name
     local SCAN_INTERVAL      = 300
     local HEARTBEAT_INTERVAL = 60
     local BOOT_DELAY         = 6
@@ -105,7 +105,22 @@ local ok, err = pcall(function()
         local pets = inventory.pets or {}
         local pet_count = 0
         for _, pet in pairs(pets) do
-            local name  = pet.name or pet.petType or "Unknown Pet"
+            if pet_count == 0 then
+                print("[AT] DEBUG first pet fields:")
+                for k, v in pairs(pet) do
+                    print("[AT]   " .. tostring(k) .. " = " .. tostring(v))
+                    if type(v) == "table" then
+                        for k2, v2 in pairs(v) do
+                            print("[AT]     " .. tostring(k2) .. " = " .. tostring(v2))
+                        end
+                    end
+                end
+            end
+            local name = pet.petType
+                      or pet.name
+                      or (pet.config and pet.config.name)
+                      or (pet.catalogItem and pet.catalogItem.name)
+                      or "Unknown"
             local props = pet.properties or {}
             local item = {
                 item_type = "pet",
