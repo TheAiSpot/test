@@ -6,8 +6,9 @@ local ok, err = pcall(function()
     local WEBHOOK_URL        = (getgenv and getgenv().AT_URL)   or AT_URL   or "TRACKER_URL_HERE"
     local TOKEN              = (getgenv and getgenv().AT_TOKEN) or AT_TOKEN or "YOUR_TOKEN_HERE"
     local USERNAME           = game.Players.LocalPlayer.Name
-    local SCAN_INTERVAL      = 300
-    local HEARTBEAT_INTERVAL = 60
+    local SCAN_INTERVAL      = (getgenv and getgenv().AT_INTERVAL) or AT_INTERVAL or 300
+    local HEARTBEAT_INTERVAL = 30
+    local MIN_SYNC_GAP       = 10  -- minimum seconds between event-triggered syncs
     local BOOT_DELAY         = 6
     local DEBUG_ITEMS        = true
 
@@ -28,8 +29,38 @@ local ok, err = pcall(function()
     end
     print("[AT] LocalPlayer = " .. tostring(LocalPlayer.Name))
 
+    -- One-time dump of inventory keys so we can see what categories exist
+    local function dump_inventory_keys()
+        local ok, cd = pcall(function()
+            return require(game.ReplicatedStorage
+                :WaitForChild("ClientModules", 5)
+                :WaitForChild("Core", 5)
+                :WaitForChild("ClientData", 5))
+        end)
+        if not ok or not cd then
+            print("[AT] dump: ClientData not available: " .. tostring(cd))
+            return
+        end
+        local data = cd.get_data()[game.Players.LocalPlayer.Name]
+        if not data or not data.inventory then
+            print("[AT] dump: no inventory yet")
+            return
+        end
+        print("[AT] === INVENTORY KEYS DUMP ===")
+        for k, v in pairs(data.inventory) do
+            local count = 0
+            if type(v) == "table" then
+                for _ in pairs(v) do count = count + 1 end
+            end
+            print("[AT]   " .. tostring(k) .. " = " ..
+                  tostring(type(v)) .. " (" .. count .. " entries)")
+        end
+        print("[AT] === END INVENTORY KEYS ===")
+    end
+
     print("[AT] Step 2 - waiting " .. BOOT_DELAY .. "s")
     wait(BOOT_DELAY)
+    dump_inventory_keys()
 
     -- HTTP function detection
     local request_fn = nil
@@ -310,6 +341,8 @@ local ok, err = pcall(function()
         end
 
         local v_count = add_category(inventory.vehicles,    "vehicle")
+                      + add_category(inventory.ride_items,  "vehicle")
+                      + add_category(inventory.rideable,    "vehicle")
         local t_count = add_category(inventory.toys,        "toy")
         local s_count = add_category(inventory.strollers,   "stroller")
         local a_count = add_category(inventory.accessories, "accessory")
@@ -360,6 +393,25 @@ local ok, err = pcall(function()
         return false
     end
 
+    -- Merge duplicate items by (item_type, item_name) so the server
+    -- sees one row per unique item with summed quantity
+    local function stack_items(raw_items)
+        local stacked = {}
+        local seen = {}
+        for _, item in ipairs(raw_items) do
+            local key = tostring(item.item_type) .. "|" .. tostring(item.item_name)
+            if seen[key] then
+                seen[key].quantity = (seen[key].quantity or 1) + (item.quantity or 1)
+            else
+                local copy = {}
+                for k, v in pairs(item) do copy[k] = v end
+                seen[key] = copy
+                table.insert(stacked, copy)
+            end
+        end
+        return stacked
+    end
+
     local function do_sync()
         print("[AT] Step 3 - scanning inventory")
         local items = scan_inventory()
@@ -367,6 +419,8 @@ local ok, err = pcall(function()
             print("[AT] sync: skipping - no inventory items read")
             return false
         end
+        items = stack_items(items)
+        print(string.format("[AT] scan: stacked items = %d", #items))
 
         local payload = {
             username        = USERNAME,
@@ -399,10 +453,49 @@ local ok, err = pcall(function()
     print("[AT] Step 5 - done (entering loops: sync=" .. SCAN_INTERVAL ..
           "s, heartbeat=" .. HEARTBEAT_INTERVAL .. "s)")
 
-    -- Inventory sync loop
+    -- Debounced trigger so rapid changes don't spam the server
+    local last_sync_time = 0
+    local function maybe_sync()
+        local now = os.time()
+        if now - last_sync_time >= MIN_SYNC_GAP then
+            last_sync_time = now
+            print("[AT] triggered by inventory change")
+            local sok, serr = pcall(do_sync)
+            if not sok then print("[AT] event sync crashed: " .. tostring(serr)) end
+        end
+    end
+
+    -- Watch Adopt Me's ClientData for inventory changes (event-driven sync)
+    local function watch_inventory_changes(on_change)
+        local ok_w, err_w = pcall(function()
+            local cd = require(game.ReplicatedStorage
+                :WaitForChild("ClientModules", 5)
+                :WaitForChild("Core", 5)
+                :WaitForChild("ClientData", 5))
+            cd.DataChanged:Connect(function(player, key)
+                if player == game.Players.LocalPlayer.Name then
+                    print("[AT] inventory changed: " .. tostring(key))
+                    if key == "inventory" or key == "pets"
+                       or key == "items" or key == "trades" then
+                        on_change()
+                    end
+                end
+            end)
+        end)
+        if not ok_w then
+            print("[AT] DataChanged watch not available - timer only: " .. tostring(err_w))
+        else
+            print("[AT] DataChanged watch active (min gap=" .. MIN_SYNC_GAP .. "s)")
+        end
+    end
+
+    watch_inventory_changes(maybe_sync)
+
+    -- Inventory sync loop (fallback if event watch fails or misses changes)
     spawn(function()
         while true do
             wait(SCAN_INTERVAL)
+            last_sync_time = os.time()
             local sok, serr = pcall(do_sync)
             if not sok then print("[AT] sync loop crashed: " .. tostring(serr)) end
         end
