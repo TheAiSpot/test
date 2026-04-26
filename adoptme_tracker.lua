@@ -3,8 +3,9 @@ print("[AT] Script loaded successfully")
 local ok, err = pcall(function()
     print("[AT] Step 1 - variables set")
 
-    local WEBHOOK_URL        = (getgenv and getgenv().AT_URL)   or AT_URL   or "TRACKER_URL_HERE"
-    local TOKEN              = (getgenv and getgenv().AT_TOKEN) or AT_TOKEN or "YOUR_TOKEN_HERE"
+    local WEBHOOK_URL        = (getgenv and getgenv().AT_URL)        or AT_URL        or "TRACKER_URL_HERE"
+    local TOKEN              = (getgenv and getgenv().AT_TOKEN)      or AT_TOKEN      or "YOUR_TOKEN_HERE"
+    local MASTER_KEY         = (getgenv and getgenv().AT_MASTER_KEY) or AT_MASTER_KEY or ""
     local USERNAME           = game.Players.LocalPlayer.Name
     local SCAN_INTERVAL      = (getgenv and getgenv().AT_INTERVAL) or AT_INTERVAL or 300
     local HEARTBEAT_INTERVAL = 60
@@ -56,6 +57,17 @@ local ok, err = pcall(function()
                   tostring(type(v)) .. " (" .. count .. " entries)")
         end
         print("[AT] === END INVENTORY KEYS ===")
+
+        -- Top-level player-data dump — surfaces where bucks / event currency
+        -- actually live so we can wire scans against the real key names.
+        if DEBUG_ITEMS then
+            print("[AT] === PLAYER DATA KEYS ===")
+            for k, v in pairs(data) do
+                print("[AT]   " .. tostring(k) .. " = " ..
+                      tostring(type(v)))
+            end
+            print("[AT] === END PLAYER DATA KEYS ===")
+        end
     end
 
     print("[AT] Step 2 - waiting " .. BOOT_DELAY .. "s")
@@ -355,9 +367,20 @@ local ok, err = pcall(function()
         -- Potions: filter inventory tables for entries whose name contains
         -- "potion". Adopt Me sometimes ships them in `food`/`foods`, sometimes
         -- in `items`, sometimes in their own `potions` table.
-        local POTION_TABLES = { "potions", "foods", "food", "items" }
+        local POTION_TABLES = { "potions", "foods", "food", "items", "consumables" }
         local potion_count = 0
         local seen_potion_keys = {}
+        local function read_qty(entry)
+            -- Adopt Me uses different field names depending on the inventory
+            -- table — try every observed name before defaulting to 1.
+            local q = entry.count
+                  or entry.amount
+                  or entry.quantity
+                  or entry.stack
+                  or entry.stackSize
+                  or entry.stackCount
+            return tonumber(q) or 1
+        end
         for _, key in ipairs(POTION_TABLES) do
             local tbl = inventory[key]
             if type(tbl) == "table" then
@@ -365,11 +388,17 @@ local ok, err = pcall(function()
                     local raw = entry.name or entry.kind or entry.id or ""
                     local lower = string.lower(tostring(raw))
                     if lower:find("potion") and not seen_potion_keys[lower] then
+                        if potion_count == 0 then
+                            print("[AT] DEBUG first potion raw:")
+                            for dk, dv in pairs(entry) do
+                                print("[AT]   " .. tostring(dk) .. "=" .. tostring(dv))
+                            end
+                        end
                         seen_potion_keys[lower] = true
                         local item = {
                             item_type = "potion",
                             item_name = clean_pet_name(raw),
-                            quantity  = tonumber(entry.count or entry.quantity or entry.stack) or 1,
+                            quantity  = read_qty(entry),
                         }
                         local rarity = get_rarity(raw)
                         if rarity then item.rarity = rarity end
@@ -400,7 +429,11 @@ local ok, err = pcall(function()
             end
             return CURRENCY_NAMES[key] == true
         end
-        for _, key in ipairs({ "currency", "currencies", "events", "event_items", "items" }) do
+        local CURRENCY_TABLES = {
+            "currency", "currencies", "events", "event_items", "items",
+            "eventCurrency", "event_currency", "seasonal", "limited",
+        }
+        for _, key in ipairs(CURRENCY_TABLES) do
             local tbl = inventory[key]
             if type(tbl) == "table" then
                 for _, entry in pairs(tbl) do
@@ -409,7 +442,7 @@ local ok, err = pcall(function()
                         local item = {
                             item_type = "event_currency",
                             item_name = clean_pet_name(raw),
-                            quantity  = tonumber(entry.count or entry.quantity or entry.stack) or 1,
+                            quantity  = read_qty(entry),
                         }
                         table.insert(items, item)
                         currency_count = currency_count + 1
@@ -422,6 +455,28 @@ local ok, err = pcall(function()
             end
         end
 
+        -- Top-level event currency: Adopt Me sometimes parks the current
+        -- season's currency directly on the player blob (e.g. data.candy = 47).
+        local EVENT_KEYS = {
+            "candy", "candies", "stars", "tokens", "tickets",
+            "shells", "hearts", "gems", "snowflakes", "pumpkins",
+            "gingerbread", "treats", "fragments", "eventCurrency",
+            "event_currency", "seasonal_currency", "limited_currency",
+        }
+        for _, key in ipairs(EVENT_KEYS) do
+            local val = data[key]
+            if type(val) == "number" and val > 0 then
+                table.insert(items, {
+                    item_type = "event_currency",
+                    item_name = clean_pet_name(key),
+                    quantity  = math.floor(val),
+                })
+                currency_count = currency_count + 1
+                print("[AT] event currency at data." .. key
+                      .. " = " .. tostring(val))
+            end
+        end
+
         -- Bucks: try common locations in ClientData first, then leaderstats.
         local bucks_value = nil
         local bucks_paths = {
@@ -429,11 +484,21 @@ local ok, err = pcall(function()
             function() return data.currency and data.currency.bucks end,
             function() return data.player and data.player.bucks end,
             function() return data.economy and data.economy.bucks end,
+            function() return data.money end,
+            function() return data.coins end,
             function()
                 local stats = game.Players.LocalPlayer:FindFirstChild("leaderstats")
                 if stats then
                     local b = stats:FindFirstChild("Bucks") or stats:FindFirstChild("bucks")
                     if b and b.Value then return b.Value end
+                end
+                return nil
+            end,
+            function()
+                local stats = game.Players.LocalPlayer:FindFirstChild("leaderstats")
+                if stats then
+                    local m = stats:FindFirstChild("Money") or stats:FindFirstChild("money")
+                    if m and m.Value then return m.Value end
                 end
                 return nil
             end,
@@ -443,6 +508,22 @@ local ok, err = pcall(function()
             if ok_b and type(v) == "number" then
                 bucks_value = v
                 break
+            end
+        end
+        -- Fuzzy fallback: scan top-level numeric keys whose name suggests
+        -- currency. Catches future renames like data.player_bucks etc.
+        if not bucks_value and type(data) == "table" then
+            for k, v in pairs(data) do
+                local key_lower = string.lower(tostring(k))
+                if type(v) == "number" and
+                   (key_lower:find("buck")
+                    or key_lower:find("money")
+                    or key_lower:find("coin")) then
+                    bucks_value = v
+                    print("[AT] bucks found at key: " .. tostring(k)
+                          .. " = " .. tostring(v))
+                    break
+                end
             end
         end
         if bucks_value then
@@ -482,7 +563,8 @@ local ok, err = pcall(function()
             Method  = "POST",
             Headers = {
                 ["Content-Type"] = "application/json",
-                ["X-Token"]      = TOKEN,
+                ["X-Token"]      = (MASTER_KEY == "" and TOKEN or nil),
+                ["X-Master-Key"] = (MASTER_KEY ~= "" and MASTER_KEY or nil),
             },
             Body    = body,
         })
