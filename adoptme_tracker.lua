@@ -352,9 +352,85 @@ local ok, err = pcall(function()
             return count
         end
 
-        local v_count = add_category(inventory.vehicles,    "vehicle")
-                      + add_category(inventory.ride_items,  "vehicle")
-                      + add_category(inventory.rideable,    "vehicle")
+        -- Vehicles: dedicated tables (every entry is a vehicle) plus mixed
+        -- tables like inventory.items / inventory.backpack where we have to
+        -- pick out vehicles by category flag or name hint. Adopt Me has
+        -- shipped vehicles in items[] alongside other gear at various points,
+        -- so we cannot rely on the dedicated tables alone.
+        local VEHICLE_TABLES_DEDICATED = {
+            "vehicles", "vehicle", "ride_items", "rideable",
+        }
+        local VEHICLE_TABLES_MIXED = { "items", "backpack" }
+        local VEHICLE_NAME_HINTS = {
+            "car", "bike", "plane", "scooter", "tractor", "helicopter",
+            "jet", "boat", "ship", "train", "truck", "moped", "kart",
+            "motorcycle", "snowmobile", "broom", "hoverboard", "carpet",
+            "pram", "wagon", "balloon", "submarine", "skateboard",
+            "skidoo", "rocket", "ufo", "vehicle", "scuba", "sleigh",
+            "raft", "canoe",
+        }
+
+        local function looks_like_vehicle(entry, raw_name)
+            local cat = string.lower(tostring(
+                entry.category or entry.type or entry.itemType
+                    or entry.item_type or ""))
+            if cat == "vehicle" or cat == "vehicles"
+               or cat == "ride" or cat == "rideable" then
+                return true
+            end
+            if entry.is_vehicle == true or entry.isVehicle == true
+               or entry.rideable == true then
+                return true
+            end
+            local n = string.lower(tostring(raw_name or ""))
+            if n == "" then return false end
+            for _, hint in ipairs(VEHICLE_NAME_HINTS) do
+                if n:find(hint, 1, true) then return true end
+            end
+            return false
+        end
+
+        local v_count = 0
+        local function add_vehicle(entry)
+            local raw_name = entry.name or entry.kind or entry.id or "unknown"
+            local item = {
+                item_type = "vehicle",
+                item_name = clean_pet_name(raw_name),
+                quantity  = tonumber(
+                    entry.count or entry.quantity or entry.stack) or 1,
+            }
+            local rarity = get_rarity(raw_name)
+            if rarity then item.rarity = rarity end
+            table.insert(items, item)
+            v_count = v_count + 1
+            if DEBUG_ITEMS then
+                print(string.format("[AT]   vehicle: %s (qty=%d rarity=%s)",
+                    item.item_name, item.quantity,
+                    tostring(item.rarity or "-")))
+            end
+        end
+
+        for _, key in ipairs(VEHICLE_TABLES_DEDICATED) do
+            local tbl = inventory[key]
+            if type(tbl) == "table" then
+                for _, entry in pairs(tbl) do add_vehicle(entry) end
+            end
+        end
+        -- Mixed tables: only entries that classify as a vehicle. Do NOT
+        -- skip just because we already saw the name in a dedicated table —
+        -- stack_items() at the end merges duplicates by (type, name).
+        for _, key in ipairs(VEHICLE_TABLES_MIXED) do
+            local tbl = inventory[key]
+            if type(tbl) == "table" then
+                for _, entry in pairs(tbl) do
+                    local raw_name = entry.name or entry.kind or entry.id or ""
+                    if looks_like_vehicle(entry, raw_name) then
+                        add_vehicle(entry)
+                    end
+                end
+            end
+        end
+
         local t_count = add_category(inventory.toys,        "toy")
         local s_count = add_category(inventory.strollers,   "stroller")
         local a_count = add_category(inventory.accessories, "accessory")
@@ -367,9 +443,14 @@ local ok, err = pcall(function()
         -- Potions: filter inventory tables for entries whose name contains
         -- "potion". Adopt Me sometimes ships them in `food`/`foods`, sometimes
         -- in `items`, sometimes in their own `potions` table.
+        --
+        -- Same potion name can appear once per stack slot in the inventory
+        -- table — sum quantities across all slots so 9 stack slots become
+        -- one entry with quantity=9 (not 1).
         local POTION_TABLES = { "potions", "foods", "food", "items", "consumables" }
         local potion_count = 0
-        local seen_potion_keys = {}
+        local potion_by_name = {}  -- cleaned_name -> item table
+        local first_potion_logged = false
         local function read_qty(entry)
             -- Adopt Me uses different field names depending on the inventory
             -- table — try every observed name before defaulting to 1.
@@ -387,26 +468,39 @@ local ok, err = pcall(function()
                 for _, entry in pairs(tbl) do
                     local raw = entry.name or entry.kind or entry.id or ""
                     local lower = string.lower(tostring(raw))
-                    if lower:find("potion") and not seen_potion_keys[lower] then
-                        if potion_count == 0 then
+                    if lower:find("potion") then
+                        if not first_potion_logged then
                             print("[AT] DEBUG first potion raw:")
                             for dk, dv in pairs(entry) do
                                 print("[AT]   " .. tostring(dk) .. "=" .. tostring(dv))
                             end
+                            first_potion_logged = true
                         end
-                        seen_potion_keys[lower] = true
-                        local item = {
-                            item_type = "potion",
-                            item_name = clean_pet_name(raw),
-                            quantity  = read_qty(entry),
-                        }
-                        local rarity = get_rarity(raw)
-                        if rarity then item.rarity = rarity end
-                        table.insert(items, item)
-                        potion_count = potion_count + 1
-                        if DEBUG_ITEMS then
-                            print(string.format("[AT]   potion: %s (qty=%d rarity=%s)",
-                                item.item_name, item.quantity, tostring(item.rarity or "-")))
+                        local cleaned = clean_pet_name(raw)
+                        local qty = read_qty(entry)
+                        local existing = potion_by_name[cleaned]
+                        if existing then
+                            existing.quantity = (existing.quantity or 0) + qty
+                            if DEBUG_ITEMS then
+                                print(string.format(
+                                    "[AT]   potion+: %s (+%d, total=%d)",
+                                    cleaned, qty, existing.quantity))
+                            end
+                        else
+                            local item = {
+                                item_type = "potion",
+                                item_name = cleaned,
+                                quantity  = qty,
+                            }
+                            local rarity = get_rarity(raw)
+                            if rarity then item.rarity = rarity end
+                            table.insert(items, item)
+                            potion_by_name[cleaned] = item
+                            potion_count = potion_count + 1
+                            if DEBUG_ITEMS then
+                                print(string.format("[AT]   potion: %s (qty=%d rarity=%s)",
+                                    item.item_name, item.quantity, tostring(item.rarity or "-")))
+                            end
                         end
                     end
                 end
